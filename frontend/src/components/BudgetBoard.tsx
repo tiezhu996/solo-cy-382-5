@@ -57,6 +57,7 @@ export default function BudgetBoard() {
   const [loading, setLoading] = useState(false);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [tripsError, setTripsError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
   // 未保存的本地输入，按分类暂存；保存成功或切换行程后清空
   const [overrides, setOverrides] = useState<Record<string, { planned?: number; spent?: number }>>({});
@@ -71,7 +72,10 @@ export default function BudgetBoard() {
           setSelectedTripId(items[0].id);
         }
       })
-      .catch(() => undefined);
+      .catch(err => {
+        setTrips([]);
+        setTripsError(err instanceof Error ? err.message : '行程列表加载失败');
+      });
     // 仅在挂载时拉取一次行程列表
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -207,6 +211,15 @@ export default function BudgetBoard() {
           <Button onClick={() => setReloadTick(tick => tick + 1)}>刷新</Button>
         </Space>
       </Card>
+
+      {tripsError && (
+        <Alert
+          type="error"
+          showIcon
+          message={`行程列表加载失败：${tripsError}`}
+          description="请确认后端服务与 /api 反向代理是否正常；也可直接在右侧输入有效的行程 ID 后回车。"
+        />
+      )}
 
       {loadError && (
         <Alert
