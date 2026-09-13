@@ -34,8 +34,10 @@ CREATE TABLE IF NOT EXISTS budgets (
   id BIGINT PRIMARY KEY AUTO_INCREMENT,
   trip_id BIGINT NOT NULL,
   category VARCHAR(40) NOT NULL,
-  planned DECIMAL(10,2) NOT NULL,
-  spent DECIMAL(10,2) NOT NULL DEFAULT 0
+  planned DECIMAL(10,2) UNSIGNED NOT NULL,
+  spent DECIMAL(10,2) UNSIGNED NOT NULL DEFAULT 0,
+  UNIQUE KEY uq_budget_trip_category (trip_id, category),
+  CONSTRAINT chk_budget_non_negative CHECK (planned >= 0 AND spent >= 0)
 );
 
 CREATE TABLE IF NOT EXISTS diary_entries (
