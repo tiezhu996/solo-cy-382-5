@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
-import bcrypt from 'bcryptjs';
+import * as bcrypt from 'bcryptjs';
 import { Repository } from 'typeorm';
 import { UserEntity } from './user.entity';
 

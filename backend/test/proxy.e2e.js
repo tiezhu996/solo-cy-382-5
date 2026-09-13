@@ -55,15 +55,21 @@ function startProxy(targetPort, stripPrefix) {
   });
 }
 
-function call(port, method, path, body) {
+function call(port, method, path, body, token) {
   return new Promise((resolve, reject) => {
     const payload = body === undefined ? null : JSON.stringify(body);
+    const headers = {};
+    if (payload) {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+    if (token) headers.Authorization = `Bearer ${token}`;
     const req = http.request(
       {
         port,
         path,
         method,
-        headers: payload ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } : {}
+        headers
       },
       res => {
         let data = '';
@@ -94,10 +100,15 @@ async function main() {
   const oldPort = oldProxy.address().port;
   const newPort = newProxy.address().port;
 
-  // 准备两个行程（不同行程隔离测试用）
-  const tripA = (await call(backendPort, 'POST', '/api/trips', { ownerId: 1, destination: '大理', departDate: '2026-10-01', days: 5, transport: '公共交通', companionCount: 3 })).body.id;
-  const tripB = (await call(backendPort, 'POST', '/api/trips', { ownerId: 2, destination: '青海湖', departDate: '2026-10-05', days: 7, transport: '自驾', companionCount: 2 })).body.id;
-  await call(backendPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'transport', planned: 1000, spent: 800 });
+  // 准备两位用户（各为一个行程的发起者）与 token
+  const ownerA = (await call(backendPort, 'POST', '/api/users/register', { email: 'a@trip.com', nickname: '阿甲', password: 'pass1234' })).body.id;
+  const ownerB = (await call(backendPort, 'POST', '/api/users/register', { email: 'b@trip.com', nickname: '阿乙', password: 'pass1234' })).body.id;
+  const tokenA = (await call(backendPort, 'POST', '/api/users/login', { email: 'a@trip.com', password: 'pass1234' })).body.token;
+  const tokenB = (await call(backendPort, 'POST', '/api/users/login', { email: 'b@trip.com', password: 'pass1234' })).body.token;
+  const tripA = (await call(backendPort, 'POST', '/api/trips', { ownerId: ownerA, destination: '大理', departDate: '2026-10-01', days: 5, transport: '公共交通', companionCount: 3 })).body.id;
+  const tripB = (await call(backendPort, 'POST', '/api/trips', { ownerId: ownerB, destination: '青海湖', departDate: '2026-10-05', days: 7, transport: '自驾', companionCount: 2 })).body.id;
+  // 种子数据直接打后端，带发起者 token
+  await call(backendPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'transport', planned: 1000, spent: 800 }, tokenA);
 
   let failures = 0;
   const check = async (name, fn) => {
@@ -137,7 +148,7 @@ async function main() {
     assert.strictEqual(r.body.totalSpent, 800);
   });
   await check('新规则保存餐饮分类，返回更新后的分类与汇总', async () => {
-    const r = await call(newPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'food', planned: 500, spent: 720.5 });
+    const r = await call(newPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'food', planned: 500, spent: 720.5 }, tokenA);
     assert.strictEqual(r.status, 201);
     assert.strictEqual(r.body.categories.find(c => c.category === 'food').overBudget, true);
     assert.strictEqual(r.body.totalSpent, 1520.5);
@@ -146,14 +157,28 @@ async function main() {
   await check('新规则 PATCH 修改金额成功', async () => {
     const list = await call(newPort, 'GET', `/api/trips/${tripA}/budgets`);
     const id = list.body.categories.find(c => c.category === 'transport').id;
-    const r = await call(newPort, 'PATCH', `/api/trips/${tripA}/budgets/${id}`, { spent: 1300 });
+    const r = await call(newPort, 'PATCH', `/api/trips/${tripA}/budgets/${id}`, { spent: 1300 }, tokenA);
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.categories.find(c => c.category === 'transport').spent, 1300);
   });
 
+  console.log('— 经代理后的身份校验 —');
+  await check('未登录写预算经代理被拒绝（401）', async () => {
+    const r = await call(newPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'other', planned: 1, spent: 0 });
+    assert.strictEqual(r.status, 401);
+    assert.strictEqual(r.body.code, 'AUTH_REQUIRED');
+  });
+  await check('非行程发起者写预算经代理被拒绝（403），且数据不变', async () => {
+    const r = await call(newPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'other', planned: 1, spent: 0 }, tokenB);
+    assert.strictEqual(r.status, 403);
+    assert.strictEqual(r.body.code, 'NOT_TRIP_OWNER');
+    const after = await call(newPort, 'GET', `/api/trips/${tripA}/budgets`);
+    assert.strictEqual(after.body.categories.find(c => c.category === 'other'), undefined);
+  });
+
   console.log('— 经代理后原有校验仍生效 —');
-  await check('负数金额经代理仍被拒绝', async () => {
-    const r = await call(newPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'other', planned: -1, spent: 0 });
+  await check('发起者写入负数金额经代理仍被拒绝', async () => {
+    const r = await call(newPort, 'POST', `/api/trips/${tripA}/budgets`, { category: 'other', planned: -1, spent: 0 }, tokenA);
     assert.strictEqual(r.status, 400);
     assert.strictEqual(r.body.code, 'NEGATIVE_AMOUNT');
   });
@@ -164,14 +189,21 @@ async function main() {
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.categories.length, 0);
   });
-  await check('行程 B 路径无法改行程 A 的记录（404，数据不串改）', async () => {
+  await check('行程 B 发起者无法改行程 A 的记录（404，数据不串改）', async () => {
     const listA = await call(newPort, 'GET', `/api/trips/${tripA}/budgets`);
     const id = listA.body.categories.find(c => c.category === 'transport').id;
-    const r = await call(newPort, 'PATCH', `/api/trips/${tripB}/budgets/${id}`, { spent: 1 });
+    const r = await call(newPort, 'PATCH', `/api/trips/${tripB}/budgets/${id}`, { spent: 1 }, tokenB);
     assert.strictEqual(r.status, 404);
     assert.strictEqual(r.body.code, 'BUDGET_NOT_FOUND');
     const afterA = await call(newPort, 'GET', `/api/trips/${tripA}/budgets`);
     assert.strictEqual(afterA.body.categories.find(c => c.category === 'transport').spent, 1300);
+  });
+  await check('非 A 发起者走 A 路径改 A 记录被拒（403）', async () => {
+    const listA = await call(newPort, 'GET', `/api/trips/${tripA}/budgets`);
+    const id = listA.body.categories.find(c => c.category === 'transport').id;
+    const r = await call(newPort, 'PATCH', `/api/trips/${tripA}/budgets/${id}`, { spent: 1 }, tokenB);
+    assert.strictEqual(r.status, 403);
+    assert.strictEqual(r.body.code, 'NOT_TRIP_OWNER');
   });
 
   oldProxy.close();

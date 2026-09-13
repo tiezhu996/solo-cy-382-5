@@ -15,7 +15,8 @@ import {
   message
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { api } from '../api';
+import { api, ApiError } from '../api';
+import BudgetAuthBar, { getToken } from './BudgetAuthBar';
 import type { BudgetCategoryItem, BudgetCategoryKey, BudgetSummary, TripItem } from '../types';
 
 /** 固定四个分类，顺序即展示顺序；key 与后端 constants/budget.ts 保持一致 */
@@ -59,6 +60,8 @@ export default function BudgetBoard() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tripsError, setTripsError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [token, setToken] = useState<string | null>(() => getToken());
+  const isLoggedIn = token !== null;
   // 未保存的本地输入，按分类暂存；保存成功或切换行程后清空
   const [overrides, setOverrides] = useState<Record<string, { planned?: number; spent?: number }>>({});
 
@@ -112,6 +115,10 @@ export default function BudgetBoard() {
 
   const saveRow = async (row: DraftRow) => {
     if (selectedTripId === null) return;
+    if (!isLoggedIn) {
+      message.warning('请先以行程发起者身份登录后再保存预算');
+      return;
+    }
     if (row.planned === undefined || row.spent === undefined || Number.isNaN(row.planned) || Number.isNaN(row.spent)) {
       message.warning('请填写有效的金额');
       return;
@@ -125,7 +132,14 @@ export default function BudgetBoard() {
       setSummary(updated);
       message.success(`已保存「${row.categoryLabel}」预算`);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : '保存失败');
+      if (err instanceof ApiError && err.status === 401) {
+        setToken(null);
+        message.error('登录已失效，请重新登录');
+      } else if (err instanceof ApiError && err.status === 403) {
+        message.error('只有该行程的发起者可以修改预算');
+      } else {
+        message.error(err instanceof Error ? err.message : '保存失败');
+      }
     } finally {
       setSavingKey(null);
     }
@@ -173,7 +187,12 @@ export default function BudgetBoard() {
       title: '操作',
       width: 100,
       render: (_, row) => (
-        <Button type="link" loading={savingKey === row.key} onClick={() => saveRow(row)}>
+        <Button
+          type="link"
+          disabled={!isLoggedIn}
+          loading={savingKey === row.key}
+          onClick={() => saveRow(row)}
+        >
           保存
         </Button>
       )
@@ -185,30 +204,33 @@ export default function BudgetBoard() {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
       <Card size="small">
-        <Space wrap>
-          <span>选择行程：</span>
-          <Select
-            style={{ width: 320 }}
-            placeholder="选择行程"
-            value={selectedTripId}
-            onChange={id => setSelectedTripId(id)}
-            options={trips.map(trip => ({
-              value: trip.id,
-              label: `${trip.destination}（#${trip.id}，${trip.departDate}）`
-            }))}
-          />
-          <Input
-            type="number"
-            addonBefore="行程ID"
-            style={{ width: 170 }}
-            value={tripIdInput ?? undefined}
-            onChange={e => {
-              const id = e.target.value === '' ? null : Number(e.target.value);
-              setTripIdInput(id);
-              if (id && Number.isInteger(id) && id > 0) setSelectedTripId(id);
-            }}
-          />
-          <Button onClick={() => setReloadTick(tick => tick + 1)}>刷新</Button>
+        <Space wrap style={{ justifyContent: 'space-between', width: '100%' }}>
+          <Space wrap>
+            <span>选择行程：</span>
+            <Select
+              style={{ width: 320 }}
+              placeholder="选择行程"
+              value={selectedTripId}
+              onChange={id => setSelectedTripId(id)}
+              options={trips.map(trip => ({
+                value: trip.id,
+                label: `${trip.destination}（#${trip.id}，${trip.departDate}）`
+              }))}
+            />
+            <Input
+              type="number"
+              addonBefore="行程ID"
+              style={{ width: 170 }}
+              value={tripIdInput ?? undefined}
+              onChange={e => {
+                const id = e.target.value === '' ? null : Number(e.target.value);
+                setTripIdInput(id);
+                if (id && Number.isInteger(id) && id > 0) setSelectedTripId(id);
+              }}
+            />
+            <Button onClick={() => setReloadTick(tick => tick + 1)}>刷新</Button>
+          </Space>
+          <BudgetAuthBar onAuthChange={() => setToken(getToken())} />
         </Space>
       </Card>
 

@@ -38,9 +38,9 @@ export class BudgetService {
     return this.buildSummary(rows);
   }
 
-  /** 录入（或重复录入时覆盖）某行程某分类的计划金额/实际支出 */
-  async upsert(tripId: number, category: unknown, planned?: number, spent?: number): Promise<BudgetSummary> {
-    await this.assertTripExists(tripId);
+  /** 录入（或重复录入时覆盖）某行程某分类的计划金额/实际支出。仅行程发起者可写。 */
+  async upsert(tripId: number, userId: number, category: unknown, planned?: number, spent?: number): Promise<BudgetSummary> {
+    await this.assertOwner(tripId, userId);
     const validCategory = this.parseCategory(category);
     const plannedValue = this.parseAmount(planned ?? 0, 'planned');
     const spentValue = this.parseAmount(spent ?? 0, 'spent');
@@ -56,9 +56,9 @@ export class BudgetService {
     return this.list(tripId);
   }
 
-  /** 按记录 id 修改，且记录必须属于该行程 —— 防止不同行程数据被串改 */
-  async update(tripId: number, id: number, input: { planned?: number; spent?: number }): Promise<BudgetSummary> {
-    await this.assertTripExists(tripId);
+  /** 按记录 id 修改，且记录必须属于该行程；仅行程发起者可写 —— 防止跨行程串改与越权修改 */
+  async update(tripId: number, userId: number, id: number, input: { planned?: number; spent?: number }): Promise<BudgetSummary> {
+    await this.assertOwner(tripId, userId);
     const budget = await this.budgets.findOne({ where: { id } });
     if (!budget || budget.tripId !== tripId) {
       throw new AppException(ERROR_CODES.BUDGET_NOT_FOUND, '该预算记录不存在或不属于当前行程', 404);
@@ -69,9 +69,18 @@ export class BudgetService {
     return this.list(tripId);
   }
 
-  private async assertTripExists(tripId: number): Promise<void> {
-    const trip = await this.trips.findOne({ where: { id: tripId }, select: { id: true } });
+  private async assertTripExists(tripId: number): Promise<TripEntity> {
+    const trip = await this.trips.findOne({ where: { id: tripId } });
     if (!trip) throw new AppException(ERROR_CODES.TRIP_NOT_FOUND, '行程不存在', 404);
+    return trip;
+  }
+
+  /** 写操作前置：行程必须存在，且当前登录用户是该行程发起者（owner_id） */
+  private async assertOwner(tripId: number, userId: number): Promise<void> {
+    const trip = await this.assertTripExists(tripId);
+    if (Number(trip.ownerId) !== Number(userId)) {
+      throw new AppException(ERROR_CODES.NOT_TRIP_OWNER, '只有行程发起者可以修改预算', 403);
+    }
   }
 
   private parseCategory(category: unknown): BudgetCategory {
